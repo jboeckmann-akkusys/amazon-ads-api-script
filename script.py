@@ -30,18 +30,13 @@ def get_targets(credentials: dict) -> list:
     count = 100
 
     while True:
-        body = {
-            "startIndex": start_index,
-            "count": count,
-        }
-
         try:
             response = sp.TargetsV3(
                 account="default",
                 marketplace=Marketplaces.EU,
                 credentials=credentials,
                 verify_additional_credentials=False
-            ).list_product_targets(**body)
+            ).list_product_targets(body={"startIndex": start_index, "count": count})
 
             targets = response.get("targets", [])
             all_targets.extend(targets)
