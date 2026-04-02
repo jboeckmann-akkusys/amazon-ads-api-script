@@ -25,6 +25,7 @@ def get_targets(credentials: dict) -> list:
     from ad_api.api import sp
     from ad_api.base import Marketplaces
 
+    profile_id = credentials.get("profile_id")
     all_targets = []
     start_index = 0
     count = 100
@@ -32,7 +33,7 @@ def get_targets(credentials: dict) -> list:
     while True:
         try:
             response = sp.TargetsV3(
-                account="default",
+                account=profile_id,
                 marketplace=Marketplaces.EU,
                 credentials=credentials,
                 verify_additional_credentials=False
@@ -102,6 +103,7 @@ def update_targets(targets: list, credentials: dict) -> dict:
         logger.info("No targets to update")
         return {"success": 0, "failed": 0}
 
+    profile_id = credentials.get("profile_id")
     batch_size = 100
     success_count = 0
     failed_count = 0
@@ -118,7 +120,7 @@ def update_targets(targets: list, credentials: dict) -> dict:
 
         try:
             response = sp.TargetsV3(
-                account="default",
+                account=profile_id,
                 marketplace=Marketplaces.EU,
                 credentials=credentials,
                 verify_additional_credentials=False
