@@ -2,7 +2,6 @@ import argparse
 import logging
 import os
 import sys
-import requests
 
 from dotenv import load_dotenv
 
@@ -13,30 +12,22 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def get_access_token():
-    url = "https://api.amazon.com/auth/o2/token"
-    data = {
-        "grant_type": "refresh_token",
-        "refresh_token": os.getenv("REFRESH_TOKEN"),
+def get_credentials():
+    return {
         "client_id": os.getenv("CLIENT_ID"),
-        "client_secret": os.getenv("CLIENT_SECRET")
+        "client_secret": os.getenv("CLIENT_SECRET"),
+        "refresh_token": os.getenv("REFRESH_TOKEN"),
+        "profile_id": os.getenv("PROFILE_ID"),
     }
-    response = requests.post(url, data=data)
-    return response.json()["access_token"]
 
 
-def get_targets(profile_id: str, access_token: str, client_id: str) -> list:
+def get_targets(credentials: dict) -> list:
+    from ad_api.api import sp
+    from ad_api.base import Marketplaces
+
     all_targets = []
     start_index = 0
     count = 100
-
-    url = "https://advertising-api-eu.amazon.com/v3/sp/targets/list"
-
-    headers = {
-        "Authorization": f"Bearer {access_token}",
-        "Amazon-Advertising-API-Scope": profile_id,
-        "Content-Type": "application/json"
-    }
 
     while True:
         body = {
@@ -45,11 +36,14 @@ def get_targets(profile_id: str, access_token: str, client_id: str) -> list:
         }
 
         try:
-            response = requests.post(url, headers=headers, json=body)
-            response.raise_for_status()
-            data = response.json()
+            response = sp.TargetsV3(
+                account="default",
+                marketplace=Marketplaces.EU,
+                credentials=credentials,
+                verify_additional_credentials=False
+            ).list_product_targets(**body)
 
-            targets = data.get("targets", [])
+            targets = response.get("targets", [])
             all_targets.extend(targets)
 
             logger.info(f"Fetched {len(targets)} targets (total so far: {len(all_targets)})")
@@ -59,9 +53,6 @@ def get_targets(profile_id: str, access_token: str, client_id: str) -> list:
 
             start_index += count
 
-        except requests.exceptions.HTTPError as e:
-            logger.error(f"HTTP Error: {e.response.status_code} - {e.response.text}")
-            break
         except Exception as e:
             logger.error(f"Error fetching targets at startIndex {start_index}: {e}")
             break
@@ -108,18 +99,13 @@ def filter_targets(targets: list) -> list:
     return targets_to_pause
 
 
-def update_targets(targets: list, profile_id: str, access_token: str, client_id: str) -> dict:
+def update_targets(targets: list, credentials: dict) -> dict:
+    from ad_api.api import sp
+    from ad_api.base import Marketplaces
+
     if not targets:
         logger.info("No targets to update")
         return {"success": 0, "failed": 0}
-
-    url = "https://advertising-api-eu.amazon.com/v3/sp/targets"
-
-    headers = {
-        "Authorization": f"Bearer {access_token}",
-        "Amazon-Advertising-API-Scope": profile_id,
-        "Content-Type": "application/json"
-    }
 
     batch_size = 100
     success_count = 0
@@ -136,8 +122,12 @@ def update_targets(targets: list, profile_id: str, access_token: str, client_id:
             })
 
         try:
-            response = requests.put(url, headers=headers, json=updates)
-            response.raise_for_status()
+            response = sp.TargetsV3(
+                account="default",
+                marketplace=Marketplaces.EU,
+                credentials=credentials,
+                verify_additional_credentials=False
+            ).edit_product_targets(updates=updates)
 
             success_count += len(batch)
             logger.info(f"Updated batch of {len(batch)} targets to paused")
@@ -166,13 +156,12 @@ def main():
         logger.error("Missing required environment variables. Check .env file.")
         sys.exit(1)
 
+    credentials = get_credentials()
+
     logger.info(f"Starting script (dry-run mode: {not args.apply})")
 
-    logger.info("Getting access token...")
-    access_token = get_access_token()
-
     logger.info("Fetching all targets...")
-    all_targets = get_targets(profile_id, access_token, client_id)
+    all_targets = get_targets(credentials)
     logger.info(f"{len(all_targets)} targets retrieved")
 
     logger.info("Filtering auto-targets to pause...")
@@ -193,7 +182,7 @@ def main():
 
     if args.apply:
         logger.info("Applying changes...")
-        result = update_targets(targets_to_pause, profile_id, access_token, client_id)
+        result = update_targets(targets_to_pause, credentials)
         logger.info(f"Update complete: {result['success']} success, {result['failed']} failed")
     else:
         logger.info("Dry-run mode: no changes applied. Use --apply to apply changes.")
