@@ -12,6 +12,9 @@ on:
           - 'true'
           - 'false'
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   pause-targets:
     runs-on: ubuntu-latest
@@ -20,9 +23,9 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
-          python-version: '3.11'
+          python-version: '3.12'
 
       - name: Install dependencies
         run: |
@@ -34,15 +37,8 @@ jobs:
           echo "CLIENT_SECRET=${{ secrets.CLIENT_SECRET }}" >> .env.local
           echo "REFRESH_TOKEN=${{ secrets.REFRESH_TOKEN }}" >> .env.local
           echo "PROFILE_ID=${{ secrets.PROFILE_ID }}" >> .env.local
+          cat .env.local
 
       - name: Run script
         run: |
-          if [ "${{ github.event.inputs.dry_run }}" == "true" ]; then
-            python script.py
-          else
-            python script.py --apply
-        env:
-          CLIENT_ID: ${{ secrets.CLIENT_ID }}
-          CLIENT_SECRET: ${{ secrets.CLIENT_SECRET }}
-          REFRESH_TOKEN: ${{ secrets.REFRESH_TOKEN }}
-          PROFILE_ID: ${{ secrets.PROFILE_ID }}
+          python script.py
