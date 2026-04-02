@@ -22,10 +22,13 @@ def get_credentials():
 
 
 def get_targets(credentials: dict) -> list:
+    import os
     from ad_api.api import sp
     from ad_api.base import Marketplaces
 
     profile_id = credentials.get("profile_id")
+    os.environ["AD_API_PROFILE_ID"] = profile_id
+    
     all_targets = []
     start_index = 0
     count = 100
@@ -33,11 +36,14 @@ def get_targets(credentials: dict) -> list:
     while True:
         try:
             response = sp.TargetsV3(
-                account=profile_id,
+                account="default",
                 marketplace=Marketplaces.EU,
                 credentials=credentials,
                 verify_additional_credentials=False
-            ).list_product_targets(body={"startIndex": start_index, "count": count})
+            ).list_product_targets(body={
+                "startIndex": start_index,
+                "count": count,
+            })
 
             targets = response.get("targets", [])
             all_targets.extend(targets)
@@ -96,6 +102,7 @@ def filter_targets(targets: list) -> list:
 
 
 def update_targets(targets: list, credentials: dict) -> dict:
+    import os
     from ad_api.api import sp
     from ad_api.base import Marketplaces
 
@@ -104,6 +111,8 @@ def update_targets(targets: list, credentials: dict) -> dict:
         return {"success": 0, "failed": 0}
 
     profile_id = credentials.get("profile_id")
+    os.environ["AD_API_PROFILE_ID"] = profile_id
+    
     batch_size = 100
     success_count = 0
     failed_count = 0
@@ -120,7 +129,7 @@ def update_targets(targets: list, credentials: dict) -> dict:
 
         try:
             response = sp.TargetsV3(
-                account=profile_id,
+                account="default",
                 marketplace=Marketplaces.EU,
                 credentials=credentials,
                 verify_additional_credentials=False
