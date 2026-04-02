@@ -113,7 +113,7 @@ def save_refresh_token(refresh_token):
     with open(env_path, "w") as f:
         f.writelines(new_lines)
     
-    print(f"\n✓ Saved refresh_token to {env_path}")
+    print(f"\n[OK] Saved refresh_token to {env_path}")
 
 
 def main():
@@ -176,11 +176,11 @@ def main():
         print("\n[Step 5] Saving refresh token to .env.local...")
         save_refresh_token(refresh_token)
         
-        print("\n✓ OAuth flow complete!")
+        print("\n[OK] OAuth flow complete!")
         print("  You can now use REFRESH_TOKEN in your scripts.")
         
     else:
-        print("\n✗ Token exchange failed. Please try again.")
+        print("\n[ERROR] Token exchange failed. Please try again.")
         sys.exit(1)
 
 

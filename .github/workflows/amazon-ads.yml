@@ -1,0 +1,48 @@
+name: Amazon Ads Auto-Target Pause
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Run in dry-run mode?'
+        required: true
+        default: 'true'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+
+jobs:
+  pause-targets:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+
+      - name: Create .env.local file
+        run: |
+          echo "CLIENT_ID=${{ secrets.CLIENT_ID }}" > .env.local
+          echo "CLIENT_SECRET=${{ secrets.CLIENT_SECRET }}" >> .env.local
+          echo "REFRESH_TOKEN=${{ secrets.REFRESH_TOKEN }}" >> .env.local
+          echo "PROFILE_ID=${{ secrets.PROFILE_ID }}" >> .env.local
+
+      - name: Run script
+        run: |
+          if [ "${{ github.event.inputs.dry_run }}" == "true" ]; then
+            python script.py
+          else
+            python script.py --apply
+        env:
+          CLIENT_ID: ${{ secrets.CLIENT_ID }}
+          CLIENT_SECRET: ${{ secrets.CLIENT_SECRET }}
+          REFRESH_TOKEN: ${{ secrets.REFRESH_TOKEN }}
+          PROFILE_ID: ${{ secrets.PROFILE_ID }}
