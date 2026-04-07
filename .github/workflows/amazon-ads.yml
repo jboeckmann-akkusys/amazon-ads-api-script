@@ -1,11 +1,6 @@
 name: Amazon Ads Auto-Target Pause
 
 on:
-  # Prevent overlapping runs
-  concurrency:
-    group: amazon-ads-script
-    cancel-in-progress: false
-
   # Run once per hour (at the start of every hour)
   schedule:
     - cron: "0 * * * *"
