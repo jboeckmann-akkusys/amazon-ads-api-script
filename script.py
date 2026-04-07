@@ -129,6 +129,7 @@ def get_targets(profile_id: str, access_token: str, client_id: str) -> list:
 def filter_targets(targets: list) -> list:
     """
     Filter targets that should be paused.
+    Only includes ENABLED targets with unwanted expression types.
     """
     types_to_pause = {
         "QUERY_BROAD_REL_MATCHES": "loose-match",
@@ -137,8 +138,21 @@ def filter_targets(targets: list) -> list:
     }
 
     targets_to_pause = []
+    enabled_count = 0
+    paused_count = 0
 
     for target in targets:
+        target_state = target.get("state", "UNKNOWN")
+        
+        # === STRICT ENABLED FILTER - KEY FIX ===
+        if target_state != "ENABLED":
+            if target_state == "PAUSED":
+                paused_count += 1
+            continue  # Skip non-ENABLED targets immediately
+        
+        # Only process ENABLED targets
+        enabled_count += 1
+        
         expression = target.get("expression", [])
         
         found_types = []
@@ -153,6 +167,12 @@ def filter_targets(targets: list) -> list:
         if should_pause:
             target["_found_types"] = found_types
             targets_to_pause.append(target)
+
+    logger.info(f"Target filtering stats:")
+    logger.info(f"  - Total targets: {len(targets)}")
+    logger.info(f"  - Enabled targets: {enabled_count}")
+    logger.info(f"  - Already paused: {paused_count}")
+    logger.info(f"  - Targets to update: {len(targets_to_pause)}")
 
     return targets_to_pause
 
