@@ -36,9 +36,17 @@ def load_credentials():
     return client_id, client_secret
 
 
-def generate_authorization_url(client_id):
+def generate_authorization_url(client_id, marketplace="de"):
     """Generate the Login with Amazon authorization URL"""
-    base_url = "https://www.amazon.com/ap/oa"
+    marketplace_urls = {
+        "us": "https://www.amazon.com/ap/oa",
+        "uk": "https://www.amazon.co.uk/ap/oa",
+        "de": "https://www.amazon.de/ap/oa",
+        "fr": "https://www.amazon.fr/ap/oa",
+        "it": "https://www.amazon.it/ap/oa",
+        "es": "https://www.amazon.es/ap/oa",
+    }
+    base_url = marketplace_urls.get(marketplace, marketplace_urls["de"])
     
     params = {
         "client_id": client_id,
@@ -117,6 +125,12 @@ def save_refresh_token(refresh_token):
 
 
 def main():
+    import argparse
+    parser = argparse.ArgumentParser(description="Amazon Ads API - OAuth Authorization Helper")
+    parser.add_argument("--code", "-c", help="Authorization code (optional, will prompt if not provided)")
+    parser.add_argument("--marketplace", "-m", default="de", help="Marketplace country code (de, us, uk, fr, it, es)")
+    args = parser.parse_args()
+    
     print("=" * 60)
     print("Amazon Ads API - OAuth Authorization Helper")
     print("=" * 60)
@@ -127,8 +141,8 @@ def main():
     print(f"  CLIENT_ID: {client_id[:20]}...")
     
     # Step 2: Generate authorization URL
-    print("\n[Step 2] Generating authorization URL...")
-    auth_url = generate_authorization_url(client_id)
+    print(f"\n[Step 2] Generating authorization URL for marketplace: {args.marketplace}...")
+    auth_url = generate_authorization_url(client_id, args.marketplace)
     
     print("\n" + "=" * 60)
     print("AUTHORIZATION URL:")
@@ -145,7 +159,10 @@ def main():
     print("-" * 60)
     
     # Step 4: Get authorization code from user
-    auth_code = input("\nPaste the authorization code here: ").strip()
+    if args.code:
+        auth_code = args.code
+    else:
+        auth_code = input("\nPaste the authorization code here: ").strip()
     
     if not auth_code:
         print("Error: No code provided")

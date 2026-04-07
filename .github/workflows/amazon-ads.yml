@@ -1,6 +1,11 @@
 name: Amazon Ads Auto-Target Pause
 
 on:
+  # Run once per hour (at the start of every hour)
+  schedule:
+    - cron: "0 * * * *"
+  
+  # Allow manual execution
   workflow_dispatch:
     inputs:
       dry_run:
@@ -11,6 +16,11 @@ on:
         options:
           - 'true'
           - 'false'
+
+  # Prevent overlapping runs
+  concurrency:
+    group: amazon-ads-script
+    cancel-in-progress: false
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -37,8 +47,7 @@ jobs:
           echo "CLIENT_SECRET=${{ secrets.CLIENT_SECRET }}" >> .env.local
           echo "REFRESH_TOKEN=${{ secrets.REFRESH_TOKEN }}" >> .env.local
           echo "PROFILE_ID=${{ secrets.PROFILE_ID }}" >> .env.local
-          cat .env.local
 
-      - name: Run script
+      - name: Run script (auto-pause targets)
         run: |
-          python script.py
+          python script.py --apply
