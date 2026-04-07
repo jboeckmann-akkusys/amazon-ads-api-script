@@ -4,6 +4,7 @@ import os
 import sys
 import json
 import time
+import subprocess
 
 from dotenv import load_dotenv
 
@@ -12,6 +13,23 @@ logging.basicConfig(
     format="%(asctime)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
+
+
+def create_github_issue(title: str, body: str):
+    """Create a GitHub issue using gh CLI (for GitHub Actions)."""
+    try:
+        result = subprocess.run(
+            ["gh", "issue", "create", "--title", title, "--body", body],
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
+        if result.returncode == 0:
+            logger.info(f"GitHub issue created: {result.stdout.strip()}")
+        else:
+            logger.warning(f"Failed to create GitHub issue: {result.stderr}")
+    except Exception as e:
+        logger.warning(f"Could not create GitHub issue: {e}")
 
 
 def get_access_token():
@@ -45,20 +63,6 @@ def get_access_token():
 def get_targets(profile_id: str, access_token: str, client_id: str) -> list:
     """
     Fetch all targets from Amazon Ads API using python-amazon-ad-api library.
-    
-    Uses sp.TargetsV3 to fetch targeting clauses.
-    The API returns 'targetingClauses' array with target objects.
-    
-    Changes:
-    - Uses ad_api library for authentication and API calls
-    - Handles pagination via nextToken
-    - Returns targetingClauses (NOT targets array) for filter_targets() compatibility
-    
-    Note: Expression types returned:
-    - QUERY_HIGH_REL_MATCHES = close-match
-    - QUERY_BROAD_REL_MATCHES = loose-match
-    - ASIN_SUBSTITUTE_RELATED = substitutes
-    - ASIN_ACCESSORY_RELATED = complements
     """
     from ad_api.api import sp
     from dotenv import load_dotenv
@@ -81,13 +85,13 @@ def get_targets(profile_id: str, access_token: str, client_id: str) -> list:
         try:
             body = {
                 "startIndex": start_index,
-                "count": count
+                "count": count,
+                "stateFilter": {"include": ["ENABLED", "PAUSED"]}
             }
             
             result = sp.TargetsV3(credentials=credentials).list_product_targets(body=body)
             payload = result.payload
             
-            # The API returns targetingClauses array, not targets
             targets = payload.get("targetingClauses", [])
             
             if not targets:
@@ -104,6 +108,18 @@ def get_targets(profile_id: str, access_token: str, client_id: str) -> list:
             time.sleep(1)
             
         except Exception as e:
+            error_str = str(e)
+            if "invalid_grant" in error_str or "refresh_token" in error_str.lower():
+                logger.error("REFRESH TOKEN EXPIRED - Creating GitHub issue...")
+                create_github_issue(
+                    "⚠️ Amazon Ads Refresh Token Expired",
+                    "The refresh token has expired. Please re-authorize the application.\n\n"
+                    f"Error: {error_str}\n\n"
+                    "Steps to fix:\n"
+                    "1. Run `python oauth_helper.py --marketplace de` locally\n"
+                    "2. Get new authorization code from Amazon\n"
+                    "3. Update REFRESH_TOKEN in GitHub Secrets"
+                )
             logger.error(f"Error fetching targets: {e}")
             break
     
@@ -113,15 +129,7 @@ def get_targets(profile_id: str, access_token: str, client_id: str) -> list:
 def filter_targets(targets: list) -> list:
     """
     Filter targets that should be paused.
-    
-    Expression types (from API):
-    - QUERY_BROAD_REL_MATCHES = loose-match
-    - ASIN_SUBSTITUTE_RELATED = substitutes
-    - ASIN_ACCESSORY_RELATED = complements
-    
-    Returns targets that match these types (NOT close-match).
     """
-    # Map API expression types to display names
     types_to_pause = {
         "QUERY_BROAD_REL_MATCHES": "loose-match",
         "ASIN_SUBSTITUTE_RELATED": "substitutes",
@@ -149,16 +157,17 @@ def filter_targets(targets: list) -> list:
     return targets_to_pause
 
 
-def update_targets(targets: list, profile_id: str, access_token: str, client_id: str, dry_run: bool = False) -> dict:
+def update_targets(targets: list, profile_id: str, access_token: str, client_id: str, 
+                   dry_run: bool = False, test_mode: int = 0) -> dict:
     """
-    Update targets to paused state using python-amazon-ad-api library.
+    Update targets to paused state with robust error handling and retry logic.
     
     Features:
-    - Batch processing (max 100 per request)
+    - Batch processing (50 per request for safety)
     - Rate limiting (1 second delay between batches)
-    - Progress tracking with detailed logging
-    - Error handling (continues on failure)
-    - Dry-run mode support
+    - Retry logic (1 retry on failure, then continue)
+    - Full error logging with request/response details
+    - Test mode support (update only N targets)
     
     Args:
         targets: List of target objects to pause
@@ -166,6 +175,7 @@ def update_targets(targets: list, profile_id: str, access_token: str, client_id:
         access_token: (unused - kept for compatibility)
         client_id: (unused - kept for compatibility)
         dry_run: If True, simulate batching without sending API requests
+        test_mode: If > 0, only update this many targets (for debugging)
     
     Returns:
         dict with success and failed counts
@@ -178,6 +188,11 @@ def update_targets(targets: list, profile_id: str, access_token: str, client_id:
         logger.info("No targets to update")
         return {"success": 0, "failed": 0, "total": 0}
 
+    # Apply test mode limit if specified
+    if test_mode > 0:
+        targets = targets[:test_mode]
+        logger.info(f"TEST MODE: Limiting to {test_mode} targets for debugging")
+
     credentials = dict(
         refresh_token=os.getenv("REFRESH_TOKEN"),
         client_id=os.getenv("CLIENT_ID"),
@@ -185,16 +200,22 @@ def update_targets(targets: list, profile_id: str, access_token: str, client_id:
         profile_id=profile_id
     )
     
-    batch_size = 100
+    batch_size = 50  # Reduced from 100 for safety
     total_targets = len(targets)
     num_batches = (total_targets + batch_size - 1) // batch_size
     
     success_count = 0
     failed_count = 0
     processed_count = 0
+    retry_count = 0
     
     mode_text = "DRY-RUN" if dry_run else "LIVE"
     logger.info(f"[{mode_text}] Processing {total_targets} targets in {num_batches} batches of max {batch_size}")
+    
+    # Test mode: Log full debug info for first batch
+    if test_mode > 0:
+        logger.info("TEST MODE DEBUG - First target sample:")
+        logger.info(f"  Target structure: {json.dumps(targets[0], indent=2)[:500]}")
     
     for batch_num in range(num_batches):
         start_idx = batch_num * batch_size
@@ -202,20 +223,15 @@ def update_targets(targets: list, profile_id: str, access_token: str, client_id:
         batch = targets[start_idx:end_idx]
         batch_length = len(batch)
         
-        # Calculate progress
         processed_count += batch_length
         progress_pct = (processed_count * 100) // total_targets
         
-        # Log batch start
-        logger.info(f"[{mode_text}] Processing batch {batch_num + 1} of {num_batches} ({progress_pct}% complete)")
-        logger.info(f"  - Batch size: {batch_length} targets")
+        logger.info(f"[{mode_text}] Batch {batch_num + 1}/{num_batches} ({progress_pct}%) - {batch_length} targets")
         
-        # In dry-run mode, skip API call but still log
         if dry_run:
             logger.info(f"  - DRY-RUN: Would pause {batch_length} targets")
-            logger.info(f"    (Batch {batch_num + 1} skipped - dry-run mode)")
             success_count += batch_length
-            time.sleep(0.1)  # Short delay just for show in dry-run
+            time.sleep(0.1)
             continue
         
         # Build update payload
@@ -223,47 +239,81 @@ def update_targets(targets: list, profile_id: str, access_token: str, client_id:
         for target in batch:
             updates.append({
                 "targetId": target["targetId"],
-                "state": "paused"
+                "state": "PAUSED"
             })
         
+        # Wrap in targetingClauses for API
+        payload = {"targetingClauses": updates}
+        
+        if test_mode > 0 and batch_num == 0:
+            logger.info(f"  - DEBUG: Payload sample (first item): {json.dumps(updates[0], indent=2)}")
+        
+        # Attempt 1: First try
+        success = False
+        error_details = None
+        
         try:
-            result = sp.TargetsV3(credentials=credentials).edit_product_targets(
-                body=updates
-            )
-            
+            result = sp.TargetsV3(credentials=credentials).edit_product_targets(body=payload)
+            success = True
             success_count += batch_length
-            logger.info(f"  - SUCCESS: Updated {batch_length} targets to paused")
+            logger.info(f"  - SUCCESS: Updated {batch_length} targets")
             
         except Exception as e:
-            # Log error but continue with next batch
-            failed_count += batch_length
-            logger.error(f"  - FAILED: {e}")
-            logger.error(f"    Continuing with next batch...")
-            # Continue - do NOT stop the script
+            error_details = str(e)
+            logger.error(f"  - FIRST ATTEMPT FAILED: {error_details}")
+            
+            # Attempt 2: Retry once
+            logger.info(f"  - Retrying (1 more attempt after 2s delay)...")
+            time.sleep(2)
+            retry_count += 1
+            
+            try:
+                result = sp.TargetsV3(credentials=credentials).edit_product_targets(body=payload)
+                success = True
+                success_count += batch_length
+                logger.info(f"  - RETRY SUCCESS: Updated {batch_length} targets after retry")
+                
+            except Exception as e2:
+                error_details = str(e2)
+                logger.error(f"  - RETRY ALSO FAILED: {error_details}")
+                failed_count += batch_length
+                
+                # Log detailed error info
+                logger.error(f"  - Failed batch payload (first 2 items):")
+                for i, upd in enumerate(updates[:2]):
+                    logger.error(f"    [{i+1}] targetId={upd.get('targetId')}, state={upd.get('state')}")
+                
+                # Check for specific error types
+                if "429" in error_details:
+                    logger.warning("  - Rate limit detected (429)")
+                elif "timeout" in error_details.lower():
+                    logger.warning("  - Timeout error detected")
         
         # Rate limiting between batches
         time.sleep(1)
     
     # Final summary
-    logger.info("=" * 50)
+    logger.info("=" * 60)
     logger.info(f"UPDATE COMPLETE [{mode_text}]")
     logger.info(f"  - Total targets: {total_targets}")
-    logger.info(f"  - Total processed: {processed_count}")
     logger.info(f"  - Successful: {success_count}")
     logger.info(f"  - Failed: {failed_count}")
-    logger.info("=" * 50)
+    logger.info(f"  - Retries used: {retry_count}")
+    logger.info("=" * 60)
     
     return {
         "success": success_count, 
         "failed": failed_count,
-        "total": total_targets
+        "total": total_targets,
+        "retries": retry_count
     }
 
 
 def main():
-    """Main function - unchanged from original."""
+    """Main function."""
     parser = argparse.ArgumentParser(description="Pause non close-match auto targets in Amazon Ads")
     parser.add_argument("--apply", action="store_true", help="Apply changes (default is dry-run)")
+    parser.add_argument("--test", type=int, default=0, help="Test mode: update only N targets (for debugging)")
     args = parser.parse_args()
 
     load_dotenv(".env.local")
@@ -278,7 +328,7 @@ def main():
         logger.error("Missing required environment variables. Check .env file.")
         sys.exit(1)
 
-    logger.info(f"Starting script (dry-run mode: {not args.apply})")
+    logger.info(f"Starting script (dry-run mode: {not args.apply}, test mode: {args.test})")
     logger.info(f"Profile ID: {profile_id}")
 
     logger.info("Getting credentials...")
@@ -317,7 +367,7 @@ def main():
         logger.info("No targets found that need to be paused")
         sys.exit(0)
 
-    logger.info("Targets to pause:")
+    logger.info("Targets to pause (first 10):")
     for target in targets_to_pause[:10]:
         campaign_id = target.get("campaignId", "N/A")
         ad_group_id = target.get("adGroupId", "N/A")
@@ -325,20 +375,18 @@ def main():
         found_types = target.get("_found_types", [])
         logger.info(f"  - Target {target_id} (Campaign: {campaign_id}, AdGroup: {ad_group_id}) - Types: {found_types}")
 
-    # Determine dry_run mode
     dry_run = not args.apply
     
     if dry_run:
         logger.info("=" * 60)
         logger.info("DRY-RUN MODE - Simulating batch processing")
         logger.info("=" * 60)
-        # Run update_targets in dry-run mode to show batching/logging
-        result = update_targets(targets_to_pause, profile_id, "", client_id, dry_run=True)
+        result = update_targets(targets_to_pause, profile_id, "", client_id, dry_run=True, test_mode=args.test)
         logger.info(f"Update complete (simulated): {result['success']} success, {result['failed']} failed")
     else:
         logger.info("Applying changes (pausing targets)...")
-        result = update_targets(targets_to_pause, profile_id, "", client_id, dry_run=False)
-        logger.info(f"Update complete: {result['success']} success, {result['failed']} failed")
+        result = update_targets(targets_to_pause, profile_id, "", client_id, dry_run=False, test_mode=args.test)
+        logger.info(f"Update complete: {result['success']} success, {result['failed']} failed, {result.get('retries', 0)} retries")
 
 
 if __name__ == "__main__":
