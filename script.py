@@ -220,7 +220,7 @@ def update_targets(targets: list, profile_id: str, access_token: str, client_id:
         profile_id=profile_id
     )
     
-    batch_size = 50  # Reduced from 100 for safety
+    batch_size = 100
     total_targets = len(targets)
     num_batches = (total_targets + batch_size - 1) // batch_size
     
