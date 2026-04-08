@@ -33,11 +33,14 @@ jobs:
           pip install -r requirements.txt
 
       - name: Create .env.local file
+        env:
+          CLIENT_ID: ${{ secrets.CLIENT_ID }}
+          CLIENT_SECRET: ${{ secrets.CLIENT_SECRET }}
+          REFRESH_TOKEN: ${{ secrets.REFRESH_TOKEN }}
+          PROFILE_ID: ${{ secrets.PROFILE_ID }}
         run: |
-          echo "CLIENT_ID=${{ secrets.CLIENT_ID }}" > .env.local
-          echo "CLIENT_SECRET=${{ secrets.CLIENT_SECRET }}" >> .env.local
-          echo "REFRESH_TOKEN=${{ secrets.REFRESH_TOKEN }}" >> .env.local
-          echo "PROFILE_ID=${{ secrets.PROFILE_ID }}" >> .env.local
+          printf 'CLIENT_ID=%s\nCLIENT_SECRET=%s\nREFRESH_TOKEN=%s\nPROFILE_ID=%s\n' "$CLIENT_ID" "$CLIENT_SECRET" "$REFRESH_TOKEN" "$PROFILE_ID" > .env.local
+          cat .env.local
 
       - name: Run script (auto-pause targets)
         run: |
