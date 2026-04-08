@@ -1,21 +1,17 @@
 name: Amazon Ads Auto-Target Pause
 
 on:
-  # Run once per hour (at the start of every hour)
+  # Run every 15 minutes
   schedule:
-    - cron: "0 * * * *"
+    - cron: "*/15 * * * *"
   
   # Allow manual execution
   workflow_dispatch:
-    inputs:
-      dry_run:
-        description: 'Run in dry-run mode?'
-        required: true
-        default: 'true'
-        type: choice
-        options:
-          - 'true'
-          - 'false'
+
+# Prevent overlapping runs
+concurrency:
+  group: amazon-ads-script
+  cancel-in-progress: true
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true

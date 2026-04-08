@@ -337,6 +337,7 @@ def main():
     parser = argparse.ArgumentParser(description="Pause non close-match auto targets in Amazon Ads")
     parser.add_argument("--apply", action="store_true", help="Apply changes (default is dry-run)")
     parser.add_argument("--test", type=int, default=0, help="Test mode: update only N targets (for debugging)")
+    parser.add_argument("--max-updates", type=int, default=0, help="Maximum number of targets to update in this run")
     args = parser.parse_args()
 
     load_dotenv(".env.local")
@@ -386,9 +387,21 @@ def main():
     targets_to_pause = filter_targets(all_targets)
     logger.info(f"Targets to pause: {len(targets_to_pause)}")
 
+    # Delta run summary
+    total_targets = len(all_targets)
+    targets_to_update = len(targets_to_pause)
+    delta_pct = (targets_to_update * 100 // total_targets) if total_targets > 0 else 0
+    logger.info(f"Delta run: {targets_to_update} / {total_targets} targets need update ({delta_pct}%)")
+
+    # Early exit if no targets to update
     if not targets_to_pause:
-        logger.info("No targets found that need to be paused")
+        logger.info("No targets to update - exiting early")
         sys.exit(0)
+
+    # Apply max-updates limit if specified
+    if args.max_updates > 0 and len(targets_to_pause) > args.max_updates:
+        targets_to_pause = targets_to_pause[:args.max_updates]
+        logger.info(f"LIMIT: Only processing first {args.max_updates} targets (--max-updates)")
 
     logger.info("Targets to pause (first 10):")
     for target in targets_to_pause[:10]:
