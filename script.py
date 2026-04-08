@@ -177,7 +177,7 @@ def filter_targets(targets: list) -> list:
     return targets_to_pause
 
 
-def update_targets(targets: list, profile_id: str, access_token: str, client_id: str, 
+def update_targets(targets: list, profile_id: str, access_token: str, client_id: str,
                    dry_run: bool = False, test_mode: int = 0) -> dict:
     """
     Update targets to paused state with robust error handling and retry logic.
@@ -277,6 +277,8 @@ def update_targets(targets: list, profile_id: str, access_token: str, client_id:
             success = True
             success_count += batch_length
             logger.info(f"  - SUCCESS: Updated {batch_length} targets")
+            logger.info(f"  - Verification skipped: Amazon Ads API does not support fetching single targets by ID")
+            logger.info(f"  - Note: Next run will verify via state filter (only ENABLED targets will be updated)")
             
         except Exception as e:
             error_details = str(e)
@@ -292,6 +294,7 @@ def update_targets(targets: list, profile_id: str, access_token: str, client_id:
                 success = True
                 success_count += batch_length
                 logger.info(f"  - RETRY SUCCESS: Updated {batch_length} targets after retry")
+                logger.info(f"  - Verification skipped: Amazon Ads API does not support fetching single targets by ID")
                 
             except Exception as e2:
                 error_details = str(e2)
