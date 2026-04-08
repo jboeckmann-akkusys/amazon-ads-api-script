@@ -5,9 +5,18 @@ Automated script to pause non close-match auto-targets in Amazon Sponsored Produ
 ## Overview
 
 This script:
-- Retrieves all Sponsored Products auto-targets
-- Identifies targets that are NOT "close-match" (loose-match, substitutes, complements)
-- Pauses those targets (dry-run by default, use `--apply` to apply changes)
+- Retrieves all Sponsored Products auto-targets from Amazon Ads API
+- Identifies ENABLED targets that are NOT "close-match" (loose-match, substitutes, complements)
+- Pauses only the targets that need updating (idempotent - safe for frequent runs)
+- Runs automatically every 5 minutes via GitHub Actions
+
+## Features
+
+- **Delta-based filtering**: Only updates targets that are ENABLED and need pausing
+- **Early exit**: Skips API calls if no targets need updating
+- **Batch processing**: 100 targets per batch with rate limiting
+- **Idempotent**: Safe to run frequently - won't re-pause already paused targets
+- **GitHub Actions**: Automated execution every 5 minutes
 
 ## Prerequisites
 
@@ -54,7 +63,7 @@ PROFILE_ID=your_profile_id_here
 1. Register at [Amazon Advertising API](https://advertising.amazon.com/)
 2. Create an application in the Developer Console
 3. Get your `CLIENT_ID` and `CLIENT_SECRET`
-4. Obtain a `REFRESH_TOKEN` through OAuth authorization
+4. Obtain a `REFRESH_TOKEN` through OAuth authorization (run `python oauth_helper.py --marketplace de`)
 5. Find your `PROFILE_ID` in your Amazon Ads account settings
 
 ## Usage
@@ -69,15 +78,16 @@ python script.py
 
 Sample output:
 ```
-2024-01-15 10:30:00 - INFO - Starting script (dry-run mode: True)
-2024-01-15 10:30:00 - INFO - Fetching all targets...
-2024-01-15 10:30:05 - INFO - Fetched 100 targets (total so far: 100)
-2024-01-15 10:30:05 - INFO - 150 targets retrieved
-2024-01-15 10:30:05 - INFO - Filtering auto-targets to pause...
-2024-01-15 10:30:05 - INFO - 25 targets to pause
-2024-01-15 10:30:05 - INFO - Targets to pause:
-2024-01-15 10:30:05 - INFO -   - Target abc123 (Campaign: campaign1, AdGroup: adgroup1) - Types: ['queryBroadRelMatches']
-2024-01-15 10:30:05 - INFO - Dry-run mode: no changes applied. Use --apply to apply changes.
+2026-04-08 11:30:00 - INFO - Starting script (dry-run mode: True)
+2026-04-08 11:30:00 - INFO - Profile ID: 2511423595502144
+2026-04-08 11:30:05 - INFO - Total targets retrieved: 39000
+2026-04-08 11:30:05 - INFO - Target filtering stats:
+2026-04-08 11:30:05 - INFO -   - Total targets: 39000
+2026-04-08 11:30:05 - INFO -   - Enabled targets: 12285
+2026-04-08 11:30:05 - INFO -   - Already paused: 26715
+2026-04-08 11:30:05 - INFO -   - Targets to update: 2340
+2026-04-08 11:30:05 - INFO - Delta run: 2340 / 39000 targets need update (6%)
+2026-04-08 11:30:05 - INFO - No targets to update - exiting early
 ```
 
 ### Apply changes
@@ -88,18 +98,65 @@ To actually pause the targets:
 python script.py --apply
 ```
 
+### Limit number of updates
+
+Use `--max-updates N` to limit how many targets are updated in a run:
+
+```bash
+python script.py --apply --max-updates 100
+```
+
+### Test mode
+
+Use `--test N` for debugging - updates only N targets:
+
+```bash
+python script.py --apply --test 5
+```
+
+## Command Line Options
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--apply` | Apply changes (without this, runs in dry-run mode) | dry-run |
+| `--test N` | Test mode: only update N targets for debugging | 0 (disabled) |
+| `--max-updates N` | Limit total number of targets to update | 0 (disabled) |
+
 ## Target Types
 
-### Close-match (NOT paused)
-- `queryBroadMatches` - Broad match (close)
-- `queryPhraseMatches` - Phrase match (close)
-- `queryExactMatches` - Exact match (close)
-- `queryHighRelMatches` - High relevance (close)
+### Close-match (NOT paused - kept active)
+- `QUERY_HIGH_REL_MATCHES` - High relevance (close match)
 
 ### Non close-match (WILL be paused)
-- `queryBroadRelMatches` - Loose-match
-- `asinSubstituteRelated` - Substitutes
-- `asinAccessoryRelated` - Complements
+- `QUERY_BROAD_REL_MATCHES` - Loose-match
+- `ASIN_SUBSTITUTE_RELATED` - Substitutes
+- `ASIN_ACCESSORY_RELATED` - Complements
+
+## Filtering Logic
+
+The script only targets targets that meet ALL criteria:
+1. **State = ENABLED** (already paused targets are skipped)
+2. **Expression type** is one of: loose-match, substitutes, complements
+
+This ensures:
+- No unnecessary API calls for already-paused targets
+- Delta detection - only newly reactivated targets are updated
+- Safe for frequent runs (idempotent)
+
+## GitHub Actions
+
+The script runs automatically via GitHub Actions:
+
+- **Schedule**: Every 5 minutes (`*/5 * * * *`)
+- **Concurrency**: Prevents overlapping runs
+- **Mode**: Always runs in apply mode (`--apply`)
+
+### Manual Trigger
+
+You can manually trigger a run from GitHub:
+1. Go to Actions tab
+2. Select "Amazon Ads Auto-Target Pause"
+3. Click "Run workflow"
 
 ## Environment Variables
 
@@ -112,11 +169,7 @@ python script.py --apply
 
 ## Marketplace
 
-This script is configured for the **EU** marketplace. To change to another region, edit `script.py` and update:
-
-```python
-marketplace=Marketplaces.EU  # Change to: NA, FE, DE, UK, etc.
-```
+This script is configured for the **EU** marketplace (Germany). The library handles the marketplace automatically based on credentials.
 
 ## Logging
 
@@ -129,7 +182,7 @@ python script.py --apply > script.log 2>&1
 ## Troubleshooting
 
 ### "Missing required environment variables"
-Ensure your `.env` file exists and contains all four required variables.
+Ensure your `.env.local` file exists and contains all four required variables.
 
 ### "Import could not be resolved"
 Run `pip install -r requirements.txt` to install dependencies.
@@ -138,3 +191,22 @@ Run `pip install -r requirements.txt` to install dependencies.
 - Check your credentials are valid
 - Ensure your API application has appropriate permissions
 - Verify your profile ID is correct
+- If refresh token expires, run `python oauth_helper.py --marketplace de` to get a new one
+
+### Targets not pausing in UI
+- The API state is authoritative - if it says PAUSED, the backend is correct
+- Amazon UI may have 5-30 minute delay in reflecting API changes
+- Check parent Campaign/Ad Group status - if they're paused, targeting may appear active
+
+## Files
+
+```
+amazon-ads-api-script/
+├── script.py                      # Main automation script
+├── oauth_helper.py               # OAuth authorization helper
+├── requirements.txt              # Python dependencies
+├── .env.example                 # Environment variable template
+├── .env.local                   # Your credentials (not committed)
+└── .github/workflows/
+    └── amazon-ads.yml           # GitHub Actions workflow
+```
