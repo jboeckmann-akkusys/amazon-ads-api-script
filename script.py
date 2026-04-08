@@ -360,6 +360,16 @@ def main():
     parser.add_argument("--max-updates", type=int, default=0, help="Maximum number of targets to update in this run")
     args = parser.parse_args()
 
+    from dotenv import load_dotenv
+    load_dotenv(".env.local")
+    
+    # Debug: print what was loaded
+    logger.info("Loading environment variables...")
+    logger.info(f"  CLIENT_ID present: {bool(os.getenv('CLIENT_ID'))}")
+    logger.info(f"  CLIENT_SECRET present: {bool(os.getenv('CLIENT_SECRET'))}")
+    logger.info(f"  REFRESH_TOKEN present: {bool(os.getenv('REFRESH_TOKEN'))}")
+    logger.info(f"  PROFILE_ID present: {bool(os.getenv('PROFILE_ID'))}")
+
     client_id = os.getenv("CLIENT_ID")
     client_secret = os.getenv("CLIENT_SECRET")
     refresh_token = os.getenv("REFRESH_TOKEN")
