@@ -1,3 +1,11 @@
+"""
+Amazon Ads Auto-Target Pause Script
+
+Designed to run as Render.com Cron Job
+Schedule configured in Render dashboard (e.g. every 15 minutes)
+Credentials provided via Render environment variables
+"""
+
 import argparse
 import logging
 import os
@@ -5,14 +13,15 @@ import sys
 import json
 import time
 import subprocess
-
-from dotenv import load_dotenv
+from datetime import datetime
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
+
+MAX_RUNTIME_SECONDS = 600  # 10 minutes soft timeout
 
 
 def create_github_issue(title: str, body: str):
@@ -39,16 +48,23 @@ def get_access_token():
     Note: The python-amazon-ad-api library handles token refresh internally.
     This function is kept for compatibility but returns credentials dict.
     """
-    from dotenv import load_dotenv
-    load_dotenv(".env.local")
-    
     client_id = os.getenv("CLIENT_ID")
     client_secret = os.getenv("CLIENT_SECRET")
     refresh_token = os.getenv("REFRESH_TOKEN")
     profile_id = os.getenv("PROFILE_ID")
     
     if not all([client_id, client_secret, refresh_token, profile_id]):
-        raise ValueError("Missing required credentials in .env.local")
+        missing = []
+        if not client_id:
+            missing.append("CLIENT_ID")
+        if not client_secret:
+            missing.append("CLIENT_SECRET")
+        if not refresh_token:
+            missing.append("REFRESH_TOKEN")
+        if not profile_id:
+            missing.append("PROFILE_ID")
+        logger.error(f"Missing required environment variables: {', '.join(missing)}")
+        raise ValueError(f"Missing required environment variables: {', '.join(missing)}")
     
     credentials = dict(
         refresh_token=refresh_token,
@@ -65,8 +81,6 @@ def get_targets(profile_id: str, access_token: str, client_id: str) -> list:
     Fetch all targets from Amazon Ads API using python-amazon-ad-api library.
     """
     from ad_api.api import sp
-    from dotenv import load_dotenv
-    load_dotenv(".env.local")
     
     credentials = dict(
         refresh_token=os.getenv("REFRESH_TOKEN"),
@@ -183,11 +197,12 @@ def update_targets(targets: list, profile_id: str, access_token: str, client_id:
     Update targets to paused state with robust error handling and retry logic.
     
     Features:
-    - Batch processing (50 per request for safety)
+    - Batch processing (100 per request for safety)
     - Rate limiting (1 second delay between batches)
     - Retry logic (1 retry on failure, then continue)
     - Full error logging with request/response details
     - Test mode support (update only N targets)
+    - Soft timeout protection (~10 minutes max)
     
     Args:
         targets: List of target objects to pause
@@ -201,8 +216,8 @@ def update_targets(targets: list, profile_id: str, access_token: str, client_id:
         dict with success and failed counts
     """
     from ad_api.api import sp
-    from dotenv import load_dotenv
-    load_dotenv(".env.local")
+    
+    start_time = time.time()
     
     if not targets:
         logger.info("No targets to update")
@@ -247,6 +262,11 @@ def update_targets(targets: list, profile_id: str, access_token: str, client_id:
         progress_pct = (processed_count * 100) // total_targets
         
         logger.info(f"[{mode_text}] Batch {batch_num + 1}/{num_batches} ({progress_pct}%) - {batch_length} targets")
+        
+        if time.time() - start_time > MAX_RUNTIME_SECONDS:
+            logger.warning(f"Soft timeout reached ({MAX_RUNTIME_SECONDS}s) - stopping after batch {batch_num + 1}")
+            logger.info(f"Processed {processed_count} of {total_targets} targets")
+            break
         
         if dry_run:
             logger.info(f"  - DRY-RUN: Would pause {batch_length} targets")
@@ -340,19 +360,27 @@ def main():
     parser.add_argument("--max-updates", type=int, default=0, help="Maximum number of targets to update in this run")
     args = parser.parse_args()
 
-    load_dotenv(".env.local")
-    load_dotenv(".env")
-
     client_id = os.getenv("CLIENT_ID")
     client_secret = os.getenv("CLIENT_SECRET")
     refresh_token = os.getenv("REFRESH_TOKEN")
     profile_id = os.getenv("PROFILE_ID")
 
     if not all([client_id, client_secret, refresh_token, profile_id]):
-        logger.error("Missing required environment variables. Check .env file.")
+        missing = []
+        if not client_id:
+            missing.append("CLIENT_ID")
+        if not client_secret:
+            missing.append("CLIENT_SECRET")
+        if not refresh_token:
+            missing.append("REFRESH_TOKEN")
+        if not profile_id:
+            missing.append("PROFILE_ID")
+        logger.error(f"Missing required environment variables: {', '.join(missing)}")
         sys.exit(1)
 
-    logger.info(f"Starting script (dry-run mode: {not args.apply}, test mode: {args.test})")
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    mode = "APPLY" if args.apply else "DRY-RUN"
+    logger.info(f"Starting Render Cron Job ({timestamp}, {mode} mode)")
     logger.info(f"Profile ID: {profile_id}")
 
     logger.info("Getting credentials...")
