@@ -122,9 +122,10 @@ def get_active_campaign_ids(profile_id: str) -> set:
         return set()
 
 
-def get_targets(profile_id: str, access_token: str, client_id: str) -> list:
+def get_targets(profile_id: str, access_token: str, client_id: str, campaign_ids: list = None) -> list:
     """
     Fetch all targets from Amazon Ads API using python-amazon-ad-api library.
+    Optionally filter by campaign IDs.
     """
     from ad_api.api import sp
     
@@ -148,6 +149,10 @@ def get_targets(profile_id: str, access_token: str, client_id: str) -> list:
                 "count": count,
                 "stateFilter": {"include": ["ENABLED", "PAUSED"]}
             }
+            
+            # Add campaignIdFilter if campaign IDs provided
+            if campaign_ids:
+                body["campaignIdFilter"] = {"include": campaign_ids}
             
             result = sp.TargetsV3(credentials=credentials).list_product_targets(body=body)
             payload = result.payload
@@ -225,8 +230,9 @@ def filter_targets(targets: list, active_campaign_ids: set = None, low_bid: floa
                 continue
         
         # Check if bid is already at or below LOW_BID - skip these
-        current_bid = target.get("bid", 0)
-        if current_bid <= low_bid:
+        # Note: For auto targets, bid may be None (inherits ad group default)
+        current_bid = target.get("bid")
+        if current_bid is not None and current_bid <= low_bid:
             already_low_bid_count += 1
             continue
         
@@ -544,8 +550,8 @@ def main():
     # First, get active campaign IDs
     active_campaign_ids = get_active_campaign_ids(profile_id)
     
-    logger.info("Fetching all targets...")
-    all_targets = get_targets(profile_id, "", client_id)
+    logger.info("Fetching targets for active campaigns...")
+    all_targets = get_targets(profile_id, "", client_id, campaign_ids=list(active_campaign_ids))
     logger.info(f"Total targets retrieved: {len(all_targets)}")
 
     if not all_targets:
