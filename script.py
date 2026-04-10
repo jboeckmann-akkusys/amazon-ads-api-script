@@ -77,6 +77,51 @@ def get_access_token():
     return credentials
 
 
+def get_active_campaign_ids(profile_id: str) -> set:
+    """
+    Fetch campaigns and return set of active (ENABLED) campaign IDs.
+    """
+    from ad_api.api import sp
+    
+    credentials = dict(
+        refresh_token=os.getenv("REFRESH_TOKEN"),
+        client_id=os.getenv("CLIENT_ID"),
+        client_secret=os.getenv("CLIENT_SECRET"),
+        profile_id=profile_id
+    )
+    
+    logger.info("Fetching campaigns to identify active ones...")
+    
+    try:
+        result = sp.CampaignsV3(credentials=credentials).list_campaigns(body={})
+        campaigns = result.payload.get('campaigns', [])
+        
+        active_ids = set()
+        campaign_states = {}
+        
+        for campaign in campaigns:
+            state = campaign.get('state', 'UNKNOWN')
+            campaign_states[state] = campaign_states.get(state, 0) + 1
+            
+            if state == 'ENABLED':
+                campaign_id = campaign.get('campaignId')
+                if campaign_id:
+                    # Store as string to match target campaignId format
+                    active_ids.add(str(campaign_id))
+        
+        logger.info("Campaign states found:")
+        for state, count in sorted(campaign_states.items()):
+            logger.info(f"  - {state}: {count}")
+        
+        logger.info(f"Found {len(active_ids)} active campaigns")
+        
+        return active_ids
+        
+    except Exception as e:
+        logger.error(f"Error fetching campaigns: {e}")
+        return set()
+
+
 def get_targets(profile_id: str, access_token: str, client_id: str) -> list:
     """
     Fetch all targets from Amazon Ads API using python-amazon-ad-api library.
@@ -141,10 +186,11 @@ def get_targets(profile_id: str, access_token: str, client_id: str) -> list:
     return all_targets
 
 
-def filter_targets(targets: list, low_bid: float = LOW_BID) -> list:
+def filter_targets(targets: list, active_campaign_ids: set = None, low_bid: float = LOW_BID) -> list:
     """
     Filter targets that need bid reduction.
-    Only includes ENABLED targets with unwanted expression types AND bid > low_bid.
+    Only includes ENABLED targets with unwanted expression types AND bid > low_bid
+    AND belong to active (non-archived) campaigns.
     """
     types_to_reduce = {
         "QUERY_BROAD_REL_MATCHES": "loose-match",
@@ -156,18 +202,27 @@ def filter_targets(targets: list, low_bid: float = LOW_BID) -> list:
     enabled_count = 0
     paused_count = 0
     already_low_bid_count = 0
+    archived_campaign_count = 0
 
     for target in targets:
         target_state = target.get("state", "UNKNOWN")
         
-        # Skip non-ENABLED targets
-        if target_state != "ENABLED":
-            if target_state == "PAUSED":
-                paused_count += 1
+        # Include both ENABLED and PAUSED targets from active campaigns
+        if target_state not in ["ENABLED", "PAUSED"]:
             continue
         
-        # Only process ENABLED targets
-        enabled_count += 1
+        # Count states
+        if target_state == "ENABLED":
+            enabled_count += 1
+        elif target_state == "PAUSED":
+            paused_count += 1
+        
+        # Check if target belongs to archived campaign
+        if active_campaign_ids is not None:
+            campaign_id = target.get("campaignId")
+            if campaign_id not in active_campaign_ids:
+                archived_campaign_count += 1
+                continue
         
         # Check if bid is already at or below LOW_BID - skip these
         current_bid = target.get("bid", 0)
@@ -195,6 +250,8 @@ def filter_targets(targets: list, low_bid: float = LOW_BID) -> list:
     logger.info(f"  - Total targets: {len(targets)}")
     logger.info(f"  - Enabled targets: {enabled_count}")
     logger.info(f"  - Already paused: {paused_count}")
+    if active_campaign_ids is not None:
+        logger.info(f"  - Archived campaign targets: {archived_campaign_count}")
     logger.info(f"  - Already low bid (<= {low_bid}): {already_low_bid_count}")
     logger.info(f"  - Targets to reduce bid: {len(targets_to_reduce_bid)}")
 
@@ -254,6 +311,7 @@ def update_targets(targets: list, profile_id: str, access_token: str, client_id:
     failed_count = 0
     processed_count = 0
     retry_count = 0
+    updated_target_ids = []  # Track updated target IDs for verification
     
     mode_text = "DRY-RUN" if dry_run else "LIVE"
     logger.info(f"[{mode_text}] Processing {total_targets} targets in {num_batches} batches of max {batch_size}")
@@ -282,24 +340,33 @@ def update_targets(targets: list, profile_id: str, access_token: str, client_id:
         if dry_run:
             logger.info(f"  - DRY-RUN: Would reduce bid to {low_bid} for {batch_length} targets")
             success_count += batch_length
+            # Track for verification in dry-run too
+            for target in batch:
+                updated_target_ids.append(target["targetId"])
             time.sleep(0.1)
             continue
         
         # Build update payload - reduce bid to LOW_BID
         updates = []
         for target in batch:
+            # Log BEFORE state for debugging
+            logger.info(f"BEFORE: Target {target['targetId']} | Campaign {target['campaignId']} | AdGroup {target['adGroupId']} | Current bid = {target.get('bid')}")
+            
             updates.append({
                 "targetId": target["targetId"],
                 "adGroupId": target["adGroupId"],
                 "campaignId": target["campaignId"],
                 "bid": low_bid
             })
+            updated_target_ids.append(target["targetId"])
         
         # Wrap in targetingClauses for API
         payload = {"targetingClauses": updates}
         
-        if test_mode > 0 and batch_num == 0:
-            logger.info(f"  - DEBUG: Payload sample (first item): {json.dumps(updates[0], indent=2)}")
+        # Log UPDATE payload sample (first 5 items)
+        logger.info("UPDATE PAYLOAD SAMPLE:")
+        for upd in updates[:5]:
+            logger.info(f"  -> Target {upd['targetId']} | New bid = {upd['bid']}")
         
         # Attempt 1: First try
         success = False
@@ -307,11 +374,30 @@ def update_targets(targets: list, profile_id: str, access_token: str, client_id:
         
         try:
             result = sp.TargetsV3(credentials=credentials).edit_product_targets(body=payload)
+            # Log API response
+            logger.info(f"API RESPONSE: {result.payload}")
+            
+            # Check for errors in response
+            response_data = result.payload
+            if isinstance(response_data, dict):
+                targeting_clauses = response_data.get("targetingClauses", {})
+                errors = targeting_clauses.get("error", [])
+                success_list = targeting_clauses.get("success", [])
+                
+                if errors:
+                    logger.warning(f"  - API returned {len(errors)} error(s):")
+                    for err in errors[:3]:  # Log first 3 errors
+                        idx = err.get("index", "N/A")
+                        err_details = err.get("errors", [])
+                        for ed in err_details:
+                            reason = ed.get("errorValue", {}).get("entityStateError", {}).get("reason", "UNKNOWN")
+                            logger.warning(f"    - Index {idx}: {reason}")
+                else:
+                    logger.info(f"  - No errors in API response")
+            
             success = True
             success_count += batch_length
             logger.info(f"  - SUCCESS: Updated {batch_length} targets")
-            logger.info(f"  - Verification skipped: Amazon Ads API does not support fetching single targets by ID")
-            logger.info(f"  - Note: Next run will verify via state filter (only ENABLED targets will be updated)")
             
         except Exception as e:
             error_details = str(e)
@@ -348,6 +434,40 @@ def update_targets(targets: list, profile_id: str, access_token: str, client_id:
         # Rate limiting between batches
         time.sleep(1)
     
+    # POST-UPDATE VERIFICATION STEP
+    if success_count > 0 and not dry_run:
+        logger.info("POST-UPDATE VERIFICATION: Re-fetching targets to verify bid changes...")
+        verification_sample = updated_target_ids[:10]  # Verify first 10
+        
+        # Re-fetch targets
+        verify_body = {
+            "startIndex": 0,
+            "count": min(1000, len(updated_target_ids) + 100),
+            "stateFilter": {"include": ["ENABLED", "PAUSED"]}
+        }
+        
+        try:
+            verify_result = sp.TargetsV3(credentials=credentials).list_product_targets(body=verify_body)
+            all_verify_targets = verify_result.payload.get("targetingClauses", [])
+            
+            # Find our updated targets
+            logger.info("POST-UPDATE VERIFICATION:")
+            verified_count = 0
+            for t in all_verify_targets:
+                if t.get("targetId") in updated_target_ids:
+                    current_bid = t.get("bid", "N/A")
+                    target_id = t.get("targetId", "N/A")
+                    logger.info(f"VERIFY: Target {target_id} | Current bid after update = {current_bid}")
+                    verified_count += 1
+                    if verified_count >= 10:
+                        break
+            
+            if verified_count == 0:
+                logger.warning("VERIFICATION: Could not find any updated targets in re-fetch")
+                
+        except Exception as verify_err:
+            logger.error(f"VERIFICATION ERROR: {verify_err}")
+    
     # Final summary
     logger.info("=" * 60)
     logger.info(f"BID UPDATE COMPLETE [{mode_text}]")
@@ -355,6 +475,15 @@ def update_targets(targets: list, profile_id: str, access_token: str, client_id:
     logger.info(f"  - Targets updated: {success_count}")
     logger.info(f"  - Failed: {failed_count}")
     logger.info(f"  - Retries used: {retry_count}")
+    logger.info("=" * 60)
+    
+    # BID DEBUG SUMMARY
+    logger.info("=" * 60)
+    logger.info("BID DEBUG SUMMARY")
+    logger.info(f"  - Total targets checked: {len(targets)}")
+    logger.info(f"  - Targets selected for update: {len(updated_target_ids)}")
+    if not dry_run:
+        logger.info(f"  - Sample verified targets: {min(10, len(updated_target_ids))}")
     logger.info("=" * 60)
     
     return {
@@ -412,6 +541,9 @@ def main():
     credentials = get_access_token()
     logger.info("Credentials loaded successfully")
 
+    # First, get active campaign IDs
+    active_campaign_ids = get_active_campaign_ids(profile_id)
+    
     logger.info("Fetching all targets...")
     all_targets = get_targets(profile_id, "", client_id)
     logger.info(f"Total targets retrieved: {len(all_targets)}")
@@ -437,7 +569,7 @@ def main():
         logger.info(f"    Expression: {json.dumps(t.get('expression', []))}")
 
     logger.info("Filtering targets to reduce bid (loose-match, substitutes, complements)...")
-    targets_to_reduce = filter_targets(all_targets, low_bid=args.low_bid)
+    targets_to_reduce = filter_targets(all_targets, active_campaign_ids=active_campaign_ids, low_bid=args.low_bid)
     logger.info(f"Targets to reduce bid: {len(targets_to_reduce)}")
 
     # Delta run summary
