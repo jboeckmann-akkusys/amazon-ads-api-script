@@ -664,29 +664,21 @@ def main():
 
     # Early exit - we no longer need to process individual targets
     # Campaign-level bid adjustments handle auto-targeting types
-    logger.info("Using campaign-level bid adjustments for auto-targeting types")
-    logger.info("Target types: autoTargetLooseMatch, autoTargetSubstitutes, autoTargetComplements")
-    logger.info("Reduction: -95% (bid reduced to 5% of original)")
-
+    logger.info("Using target-level approach to pause auto-targeting types")
+    logger.info("Target types to pause: loose-match, substitutes, complements")
+    
     dry_run = not args.apply
     
-    # Use campaign-level bid adjustments instead of target-level updates
     if dry_run:
         logger.info("=" * 60)
-        logger.info("DRY-RUN MODE - Would apply campaign-level bid adjustments")
+        logger.info("DRY-RUN MODE - Would pause auto-targeting targets")
         logger.info("=" * 60)
-        # Simulate: show what would be done
-        logger.info(f"Would apply -95% bid adjustment to {len(active_campaign_ids)} campaigns")
-        for cid in active_campaign_ids:
-            logger.info(f"  Campaign {cid}: autoTargetLooseMatch, autoTargetSubstitutes, autoTargetComplements -> -95%")
-        result = {"success": len(active_campaign_ids), "failed": 0}
+        result = update_targets(targets_to_reduce, profile_id, "", client_id, dry_run=True, test_mode=args.test, low_bid=args.low_bid)
+        logger.info(f"Update complete (simulated): {result['success']} success, {result['failed']} failed")
     else:
-        logger.info("Applying campaign-level bid adjustments...")
-        # Calculate reduction percentage from low_bid (approximation)
-        # A 95% reduction means bid = 0.05 * original, so we use -95%
-        reduction_pct = 95
-        result = apply_campaign_bid_adjustments(active_campaign_ids, profile_id, reduction_percent=reduction_pct)
-        logger.info(f"Campaign bid adjustments: {result['success']} success, {result['failed']} failed")
+        logger.info("Applying changes (pausing auto-targeting targets)...")
+        result = update_targets(targets_to_reduce, profile_id, "", client_id, dry_run=False, test_mode=args.test, low_bid=args.low_bid)
+        logger.info(f"Update complete: {result['success']} success, {result['failed']} failed, {result.get('retries', 0)} retries")
 
 
 if __name__ == "__main__":
