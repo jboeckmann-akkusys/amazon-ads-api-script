@@ -77,6 +77,90 @@ def get_access_token():
     return credentials
 
 
+def apply_campaign_bid_adjustments(active_campaign_ids: set, profile_id: str, reduction_percent: int = 95) -> dict:
+    """
+    Apply bid adjustments at campaign level for auto-targeting types.
+    
+    Uses bidding.adjustments with predicate values:
+    - autoTargetLooseMatch: loose-match (QUERY_BROAD_REL_MATCHES)
+    - autoTargetSubstitutes: substitutes (ASIN_SUBSTITUTE_RELATED) 
+    - autoTargetComplements: complements (ASIN_ACCESSORY_RELATED)
+    
+    Args:
+        active_campaign_ids: Set of campaign IDs to adjust
+        profile_id: Amazon Ads profile ID
+        reduction_percent: Percentage to reduce bid (default 95%)
+    
+    Returns:
+        dict with success and failed campaign counts
+    """
+    from ad_api.api import sp
+    
+    credentials = dict(
+        refresh_token=os.getenv("REFRESH_TOKEN"),
+        client_id=os.getenv("CLIENT_ID"),
+        client_secret=os.getenv("CLIENT_SECRET"),
+        profile_id=profile_id
+    )
+    
+    if not active_campaign_ids:
+        logger.info("No active campaigns to adjust")
+        return {"success": 0, "failed": 0}
+    
+    logger.info(f"Applying campaign-level bid adjustments (-{reduction_percent}%)...")
+    
+    # Predicates for auto-targeting types
+    predicates = [
+        "autoTargetLooseMatch",
+        "autoTargetSubstitutes", 
+        "autoTargetComplements"
+    ]
+    
+    success_count = 0
+    failed_count = 0
+    
+    for campaign_id in active_campaign_ids:
+        # Build bidding adjustments for each auto-target type
+        bidding_config = {
+            "strategy": "legacyForSales",
+            "adjustments": [
+                {"predicate": pred, "percentage": -reduction_percent}
+                for pred in predicates
+            ]
+        }
+        
+        update_body = {
+            "campaigns": [{
+                "campaignId": campaign_id,
+                "bidding": bidding_config
+            }]
+        }
+        
+        try:
+            result = sp.CampaignsV3(credentials=credentials).edit_campaigns(body=update_body)
+            response = result.payload
+            
+            campaigns_result = response.get("campaigns", {})
+            errors = campaigns_result.get("error", [])
+            successes = campaigns_result.get("success", [])
+            
+            if errors:
+                logger.warning(f"  Campaign {campaign_id} errors: {errors}")
+                failed_count += 1
+            else:
+                logger.info(f"  Campaign {campaign_id}: bid adjustments applied")
+                success_count += 1
+                
+        except Exception as e:
+            logger.warning(f"  Campaign {campaign_id} failed: {e}")
+            failed_count += 1
+        
+        time.sleep(0.5)  # Rate limiting
+    
+    logger.info(f"Campaign bid adjustments complete: {success_count} success, {failed_count} failed")
+    return {"success": success_count, "failed": failed_count}
+
+
 def get_active_campaign_ids(profile_id: str) -> set:
     """
     Fetch campaigns and return set of active (ENABLED) campaign IDs.
@@ -578,43 +662,31 @@ def main():
     targets_to_reduce = filter_targets(all_targets, active_campaign_ids=active_campaign_ids, low_bid=args.low_bid)
     logger.info(f"Targets to reduce bid: {len(targets_to_reduce)}")
 
-    # Delta run summary
-    total_targets = len(all_targets)
-    targets_to_update = len(targets_to_reduce)
-    delta_pct = (targets_to_update * 100 // total_targets) if total_targets > 0 else 0
-    logger.info(f"Delta run: {targets_to_update} / {total_targets} targets need bid reduction ({delta_pct}%)")
-
-    # Early exit if no targets to update
-    if not targets_to_reduce:
-        logger.info("No targets to update - exiting early")
-        sys.exit(0)
-
-    # Apply max-updates limit if specified
-    if args.max_updates > 0 and len(targets_to_reduce) > args.max_updates:
-        targets_to_reduce = targets_to_reduce[:args.max_updates]
-        logger.info(f"LIMIT: Only processing first {args.max_updates} targets (--max-updates)")
-
-    logger.info("Targets to reduce bid (first 10):")
-    for target in targets_to_reduce[:10]:
-        campaign_id = target.get("campaignId", "N/A")
-        ad_group_id = target.get("adGroupId", "N/A")
-        target_id = target.get("targetId", "N/A")
-        current_bid = target.get("_current_bid", "N/A")
-        found_types = target.get("_found_types", [])
-        logger.info(f"  - Target {target_id} (Campaign: {campaign_id}, AdGroup: {ad_group_id}) - Types: {found_types}, Current bid: {current_bid}")
+    # Early exit - we no longer need to process individual targets
+    # Campaign-level bid adjustments handle auto-targeting types
+    logger.info("Using campaign-level bid adjustments for auto-targeting types")
+    logger.info("Target types: autoTargetLooseMatch, autoTargetSubstitutes, autoTargetComplements")
+    logger.info("Reduction: -95% (bid reduced to 5% of original)")
 
     dry_run = not args.apply
     
+    # Use campaign-level bid adjustments instead of target-level updates
     if dry_run:
         logger.info("=" * 60)
-        logger.info("DRY-RUN MODE - Simulating batch processing")
+        logger.info("DRY-RUN MODE - Would apply campaign-level bid adjustments")
         logger.info("=" * 60)
-        result = update_targets(targets_to_reduce, profile_id, "", client_id, dry_run=True, test_mode=args.test, low_bid=args.low_bid)
-        logger.info(f"Update complete (simulated): {result['success']} success, {result['failed']} failed")
+        # Simulate: show what would be done
+        logger.info(f"Would apply -95% bid adjustment to {len(active_campaign_ids)} campaigns")
+        for cid in active_campaign_ids:
+            logger.info(f"  Campaign {cid}: autoTargetLooseMatch, autoTargetSubstitutes, autoTargetComplements -> -95%")
+        result = {"success": len(active_campaign_ids), "failed": 0}
     else:
-        logger.info("Applying changes (reducing bids)...")
-        result = update_targets(targets_to_reduce, profile_id, "", client_id, dry_run=False, test_mode=args.test, low_bid=args.low_bid)
-        logger.info(f"Update complete: {result['success']} success, {result['failed']} failed, {result.get('retries', 0)} retries")
+        logger.info("Applying campaign-level bid adjustments...")
+        # Calculate reduction percentage from low_bid (approximation)
+        # A 95% reduction means bid = 0.05 * original, so we use -95%
+        reduction_pct = 95
+        result = apply_campaign_bid_adjustments(active_campaign_ids, profile_id, reduction_percent=reduction_pct)
+        logger.info(f"Campaign bid adjustments: {result['success']} success, {result['failed']} failed")
 
 
 if __name__ == "__main__":
