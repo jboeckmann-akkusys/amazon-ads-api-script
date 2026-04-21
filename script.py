@@ -77,7 +77,7 @@ def get_access_token():
     return credentials
 
 
-def apply_campaign_bid_adjustments(active_campaign_ids: set, profile_id: str, reduction_percent: int = 95) -> dict:
+def apply_campaign_bid_adjustments(active_campaign_ids: set, profile_id: str, reduction_percent: int = 100) -> dict:
     """
     Apply bid adjustments at campaign level for auto-targeting types.
     
@@ -86,10 +86,12 @@ def apply_campaign_bid_adjustments(active_campaign_ids: set, profile_id: str, re
     - autoTargetSubstitutes: substitutes (ASIN_SUBSTITUTE_RELATED) 
     - autoTargetComplements: complements (ASIN_ACCESSORY_RELATED)
     
+    Default is -100% which effectively disables these auto-targeting types.
+    
     Args:
         active_campaign_ids: Set of campaign IDs to adjust
         profile_id: Amazon Ads profile ID
-        reduction_percent: Percentage to reduce bid (default 95%)
+        reduction_percent: Percentage to reduce bid (default 100% = disable)
     
     Returns:
         dict with success and failed campaign counts
@@ -107,7 +109,7 @@ def apply_campaign_bid_adjustments(active_campaign_ids: set, profile_id: str, re
         logger.info("No active campaigns to adjust")
         return {"success": 0, "failed": 0}
     
-    logger.info(f"Applying campaign-level bid adjustments (-{reduction_percent}%)...")
+    logger.info(f"Applying campaign-level bid adjustments (-{reduction_percent}%) to DISABLE auto-targeting types...")
     
     # Predicates for auto-targeting types
     predicates = [
@@ -148,7 +150,7 @@ def apply_campaign_bid_adjustments(active_campaign_ids: set, profile_id: str, re
                 logger.warning(f"  Campaign {campaign_id} errors: {errors}")
                 failed_count += 1
             else:
-                logger.info(f"  Campaign {campaign_id}: bid adjustments applied")
+                logger.info(f"  Campaign {campaign_id}: bid adjustments applied (-{reduction_percent}%)")
                 success_count += 1
                 
         except Exception as e:
@@ -664,6 +666,11 @@ def main():
 
     # First, get active campaign IDs
     active_campaign_ids = get_active_campaign_ids(profile_id)
+    
+    # Apply campaign-level bid adjustments to disable auto-targeting types
+    logger.info("Applying campaign-level auto-targeting disable...")
+    campaign_result = apply_campaign_bid_adjustments(active_campaign_ids, profile_id)
+    logger.info(f"Campaign-level adjustments: {campaign_result['success']} success, {campaign_result['failed']} failed")
     
     logger.info("Fetching targets for active campaigns...")
     all_targets = get_targets(profile_id, "", client_id, campaign_ids=list(active_campaign_ids))
