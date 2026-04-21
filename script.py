@@ -273,34 +273,34 @@ def get_targets(profile_id: str, access_token: str, client_id: str, campaign_ids
                 "stateFilter": {"include": ["ENABLED", "PAUSED"]}
             }
             
-            # Fetch targets PER CAMPAIGN to avoid API pagination issues
+            # Fetch ALL targets (without campaignIdFilter) - then filter in Python
+            # Note: campaignIdFilter limits results to ~5000 total, so we fetch all and filter
             if campaign_ids and len(campaign_ids) > 0:
-                logger.info(f"Fetching targets campaign-by-campaign: {len(campaign_ids)} campaigns")
-                for camp_id in campaign_ids:
-                    camp_page_count = 0
-                    camp_start_index = 0
-                    camp_count = 2000
-                    while True:
-                        camp_result = sp.TargetsV3(credentials=credentials).list_product_targets(body={
-                            "startIndex": camp_start_index,
-                            "count": camp_count,
-                            "campaignIdFilter": {"include": [camp_id]},
-                            "stateFilter": {"include": ["ENABLED", "PAUSED"]}
-                        })
-                        camp_targets = camp_result.payload.get("targetingClauses", [])
-                        if not camp_targets:
-                            break
-                        all_targets.extend(camp_targets)
-                        camp_page_count += len(camp_targets)
-                        
-                        total_results = camp_result.payload.get("totalResults", 0)
-                        if camp_start_index + len(camp_targets) >= total_results:
-                            break
-                        
-                        camp_start_index += camp_count
-                        logger.info(f"  Campaign {camp_id}: page {camp_start_index // camp_count}, fetched {camp_page_count} so far")
+                logger.info(f"Fetching all targets and filtering by campaign IDs in Python")
+                start_index = 0
+                count = 2000
+                while True:
+                    result = sp.TargetsV3(credentials=credentials).list_product_targets(body={
+                        "startIndex": start_index,
+                        "count": count,
+                        "stateFilter": {"include": ["ENABLED", "PAUSED"]}
+                    })
+                    targets = result.payload.get("targetingClauses", [])
+                    if not targets:
+                        break
                     
-                    logger.info(f"  Campaign {camp_id}: {camp_page_count} targets total")
+                    # Filter to only active campaign IDs
+                    for t in targets:
+                        if t.get("campaignId") in campaign_ids:
+                            all_targets.append(t)
+                    
+                    total_results = result.payload.get("totalResults", 0)
+                    logger.info(f"startIndex {start_index}: fetched {len(targets)} (filtered: {len(all_targets)}/{total_results})")
+                    
+                    if start_index + len(targets) >= total_results:
+                        break
+                    
+                    start_index += count
                     time.sleep(0.5)
                 return all_targets
 
