@@ -234,9 +234,39 @@ def get_targets(profile_id: str, access_token: str, client_id: str, campaign_ids
                 "stateFilter": {"include": ["ENABLED", "PAUSED"]}
             }
             
-            # Add campaignIdFilter if campaign IDs provided
-            if campaign_ids:
-                body["campaignIdFilter"] = {"include": campaign_ids}
+            # Fetch targets PER CAMPAIGN to avoid API pagination issues
+            if campaign_ids and len(campaign_ids) > 0:
+                logger.info(f"Fetching targets campaign-by-campaign: {len(campaign_ids)} campaigns")
+                for camp_id in campaign_ids:
+                    camp_page_count = 0
+                    camp_start_index = 0
+                    camp_count = 2000
+                    while True:
+                        camp_result = sp.TargetsV3(credentials=credentials).list_product_targets(body={
+                            "startIndex": camp_start_index,
+                            "count": camp_count,
+                            "campaignIdFilter": {"include": [camp_id]},
+                            "stateFilter": {"include": ["ENABLED", "PAUSED"]}
+                        })
+                        camp_targets = camp_result.payload.get("targetingClauses", [])
+                        if not camp_targets:
+                            break
+                        all_targets.extend(camp_targets)
+                        camp_page_count += len(camp_targets)
+                        
+                        total_results = camp_result.payload.get("totalResults", 0)
+                        if camp_start_index + len(camp_targets) >= total_results:
+                            break
+                        
+                        camp_start_index += camp_count
+                        logger.info(f"  Campaign {camp_id}: page {camp_start_index // camp_count}, fetched {camp_page_count} so far")
+                    
+                    logger.info(f"  Campaign {camp_id}: {camp_page_count} targets total")
+                    time.sleep(0.5)
+                return all_targets
+
+            # Default: fetch all targets (filtering in Python)
+            logger.info(f"Fetching all targets (filtering in Python)")
             
             result = sp.TargetsV3(credentials=credentials).list_product_targets(body=body)
             payload = result.payload
@@ -292,31 +322,31 @@ def filter_targets(targets: list, active_campaign_ids: set = None, low_bid: floa
     paused_count = 0
     already_low_bid_count = 0
     archived_campaign_count = 0
-
     for target in targets:
         target_state = target.get("state", "UNKNOWN")
-        
+
         # Include both ENABLED and PAUSED targets from active campaigns
         if target_state not in ["ENABLED", "PAUSED"]:
             continue
-        
+
         # Count states
         if target_state == "ENABLED":
             enabled_count += 1
         elif target_state == "PAUSED":
             paused_count += 1
-        
-        # Check if target belongs to archived campaign
+
+        # Skip targets from archived campaigns
         if active_campaign_ids is not None:
             campaign_id = target.get("campaignId")
             if campaign_id not in active_campaign_ids:
                 archived_campaign_count += 1
                 continue
         
-        # Check if bid is already at or below LOW_BID - skip these
-        # Note: For auto targets, bid may be None (inherits ad group default)
+        # Get current bid value
         current_bid = target.get("bid")
-        if current_bid is not None and current_bid <= low_bid:
+
+        # Skip targets that are already PAUSED (regardless of bid - they're already handled)
+        if target_state == "PAUSED":
             already_low_bid_count += 1
             continue
         
@@ -436,7 +466,7 @@ def update_targets(targets: list, profile_id: str, access_token: str, client_id:
             time.sleep(0.1)
             continue
         
-        # Build update payload - reduce bid to LOW_BID
+        # Build update payload - reduce bid AND set to PAUSED
         updates = []
         for target in batch:
             # Log BEFORE state for debugging
@@ -446,7 +476,8 @@ def update_targets(targets: list, profile_id: str, access_token: str, client_id:
                 "targetId": target["targetId"],
                 "adGroupId": target["adGroupId"],
                 "campaignId": target["campaignId"],
-                "bid": low_bid
+                "bid": low_bid,
+                "state": "PAUSED"  # Also pause the target
             })
             updated_target_ids.append(target["targetId"])
         
