@@ -88,6 +88,9 @@ def apply_campaign_bid_adjustments(active_campaign_ids: set, profile_id: str, re
     
     Default is -100% which effectively disables these auto-targeting types.
     
+    Also changes AUTO_FOR_SALES strategy to LEGACY_FOR_SALES to allow
+    target-level bid changes to persist (AUTO_FOR_SALES overrides manual changes).
+    
     Args:
         active_campaign_ids: Set of campaign IDs to adjust
         profile_id: Amazon Ads profile ID
@@ -110,6 +113,40 @@ def apply_campaign_bid_adjustments(active_campaign_ids: set, profile_id: str, re
         return {"success": 0, "failed": 0}
     
     logger.info(f"Applying campaign-level bid adjustments (-{reduction_percent}%) to DISABLE auto-targeting types...")
+    
+    # First, get current campaign strategies and switch AUTO_FOR_SALES to LEGACY_FOR_SALES
+    logger.info("Checking and fixing bidding strategies...")
+    result = sp.CampaignsV3(credentials=credentials).list_campaigns(body={})
+    campaigns = result.payload.get("campaigns", [])
+    
+    strategy_changes = 0
+    for c in campaigns:
+        campaign_id = c.get("campaignId")
+        if campaign_id not in active_campaign_ids:
+            continue
+        
+        dyn = c.get("dynamicBidding", {})
+        strategy = dyn.get("strategy", "")
+        
+        if strategy == "AUTO_FOR_SALES":
+            logger.info(f"  Campaign {campaign_id}: changing strategy from AUTO_FOR_SALES to LEGACY_FOR_SALES")
+            update_body = {
+                "campaigns": [{
+                    "campaignId": campaign_id,
+                    "dynamicBidding": {
+                        "strategy": "LEGACY_FOR_SALES"
+                    }
+                }]
+            }
+            try:
+                sp.CampaignsV3(credentials=credentials).edit_campaigns(body=update_body)
+                strategy_changes += 1
+            except Exception as e:
+                logger.warning(f"  Strategy change failed for {campaign_id}: {e}")
+            time.sleep(0.5)
+    
+    if strategy_changes > 0:
+        logger.info(f"  Changed {strategy_changes} campaigns from AUTO_FOR_SALES to LEGACY_FOR_SALES")
     
     # Predicates for auto-targeting types
     predicates = [
