@@ -225,7 +225,7 @@ def categorize_targets(targets: list, active_campaign_ids: set = None, force_tes
     unknown_type_count = 0
 
     for target in targets:
-        target_state = target.get("state", "UNKNOWN")
+        target_state = target.get("state", "UNKNOWN").upper()
 
         if target_state not in ["ENABLED", "PAUSED"]:
             continue
@@ -245,12 +245,23 @@ def categorize_targets(targets: list, active_campaign_ids: set = None, force_tes
         expression = target.get("expression", [])
 
         target_type = None
-        for expr in expression:
-            expr_type = expr.get("type", "")
-            mapped = TYPE_MAPPING.get(expr_type)
-            if mapped:
-                target_type = mapped
-                break
+        expr_type = None
+
+        # Method 1: Iterate through expression array
+        if expression and len(expression) > 0:
+            expr_type = expression[0].get("type", "")
+            logger.info(f"[DEBUG] FULL TARGET: targetId={target.get('targetId')} | state={target_state} | campaignId={campaign_id} | expression[0].type={expr_type}")
+
+        # Method 2: Try direct field as fallback
+        if not expr_type:
+            expr_type = target.get("expressionType", "")
+
+        mapped = TYPE_MAPPING.get(expr_type)
+        if mapped:
+            target_type = mapped
+            logger.info(f"[DEBUG] MAPPING SUCCESS: expr_type={expr_type} | mapped={target_type}")
+        else:
+            logger.warning(f"[DEBUG] MAPPING FAILED: expr_type={expr_type} | mapped={mapped}")
 
         if target_type is None:
             unknown_type_count += 1
@@ -263,6 +274,7 @@ def categorize_targets(targets: list, active_campaign_ids: set = None, force_tes
 
         # LAYER 1: BASELINE LOGIC (ALWAYS applied, regardless of performance)
         if target_type == "loose-match":
+            logger.info(f"[DEBUG] MATCH loose-match → should PAUSE (state={target_state})")
             loose_match_count += 1
             if target_state == "ENABLED":
                 target["_target_type"] = target_type
@@ -271,6 +283,7 @@ def categorize_targets(targets: list, active_campaign_ids: set = None, force_tes
                 logger.info(f"[DEBUG] Target {target_id} | type={target_type} | campaign_id={campaign_id} | action=PAUSE | reason=baseline_loose_match_enabled")
 
         elif target_type == "complements":
+            logger.info(f"[DEBUG] MATCH complements → should LOW_BID")
             complements_count += 1
             target["_target_type"] = target_type
             target["_current_bid"] = current_bid
@@ -280,6 +293,7 @@ def categorize_targets(targets: list, active_campaign_ids: set = None, force_tes
             logger.info(f"[DEBUG] Target {target_id} | type={target_type} | campaign_id={campaign_id} | action=LOW_BID | reason=baseline_complements")
 
         elif target_type == "substitutes":
+            logger.info(f"[DEBUG] MATCH substitutes → should REDUCE")
             substitutes_count += 1
             ad_group_bid = float(ad_group_default_bid) if ad_group_default_bid else 0.80
             new_bid = round(ad_group_bid * 0.5, 2)
@@ -292,9 +306,13 @@ def categorize_targets(targets: list, active_campaign_ids: set = None, force_tes
             logger.info(f"[DEBUG] Target {target_id} | type={target_type} | campaign_id={campaign_id} | action=REDUCE_BID | ad_group_bid={ad_group_bid} | new_bid={new_bid} | reason=baseline_substitutes_50pct")
 
         elif target_type == "close-match":
+            logger.info(f"[DEBUG] MATCH close-match → SKIP")
             close_match_count += 1
             skip_targets.append(target)
             logger.info(f"[DEBUG] Target {target_id} | type={target_type} | campaign_id={campaign_id} | action=SKIP | reason=baseline_close_match")
+
+        else:
+            logger.warning(f"[DEBUG] NO MATCH → target_type={target_type} | target_id={target_id}")
 
     stats = {
         "total": len(targets),
@@ -323,6 +341,16 @@ def categorize_targets(targets: list, active_campaign_ids: set = None, force_tes
     logger.info(f"  - Targets to set LOW_BID: {len(low_bid_targets)}")
     logger.info(f"  - Targets to REDUCE_BID: {len(reduce_bid_targets)}")
     logger.info(f"  - Targets to SKIP: {len(skip_targets)}")
+
+    # VERIFY ACTION LISTS BEFORE RETURN
+    logger.info(f"[DEBUG] === VERIFY BEFORE RETURN ===")
+    logger.info(f"[DEBUG] pause_targets count: {len(pause_targets)}")
+    logger.info(f"[DEBUG] low_bid_targets count: {len(low_bid_targets)}")
+    logger.info(f"[DEBUG] reduce_bid_targets count: {len(reduce_bid_targets)}")
+    logger.info(f"[DEBUG] SAMPLE pause_targets IDs: {[t.get('targetId') for t in pause_targets[:5]]}")
+    logger.info(f"[DEBUG] SAMPLE low_bid_targets IDs: {[t.get('targetId') for t in low_bid_targets[:5]]}")
+    logger.info(f"[DEBUG] SAMPLE reduce_bid_targets IDs: {[t.get('targetId') for t in reduce_bid_targets[:5]]}")
+    logger.info(f"[DEBUG] ============================")
 
     return {
         "pause_targets": pause_targets,
