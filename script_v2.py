@@ -224,6 +224,10 @@ def categorize_targets(targets: list, active_campaign_ids: set = None, force_tes
     close_match_count = 0
     unknown_type_count = 0
 
+    loose_enabled = 0
+    loose_paused = 0
+    loose_other = 0
+
     for target in targets:
         target_state = target.get("state", "UNKNOWN").upper()
 
@@ -274,13 +278,21 @@ def categorize_targets(targets: list, active_campaign_ids: set = None, force_tes
 
         # LAYER 1: BASELINE LOGIC (ALWAYS applied, regardless of performance)
         if target_type == "loose-match":
-            logger.info(f"[DEBUG] MATCH loose-match → should PAUSE (state={target_state})")
+            logger.info(f"[DEBUG] LOOSE targetId={target_id} | state={target_state}")
             loose_match_count += 1
+
             if target_state == "ENABLED":
+                loose_enabled += 1
                 target["_target_type"] = target_type
                 target["_current_bid"] = current_bid
                 pause_targets.append(target)
                 logger.info(f"[DEBUG] Target {target_id} | type={target_type} | campaign_id={campaign_id} | action=PAUSE | reason=baseline_loose_match_enabled")
+            elif target_state == "PAUSED":
+                loose_paused += 1
+                logger.info(f"[DEBUG] LOOSE ALREADY PAUSED: targetId={target_id}")
+            else:
+                loose_other += 1
+                logger.warning(f"[DEBUG] LOOSE OTHER STATE: targetId={target_id} | state={target_state}")
 
         elif target_type == "complements":
             logger.info(f"[DEBUG] MATCH complements → should LOW_BID")
@@ -313,6 +325,8 @@ def categorize_targets(targets: list, active_campaign_ids: set = None, force_tes
 
         else:
             logger.warning(f"[DEBUG] NO MATCH → target_type={target_type} | target_id={target_id}")
+
+    logger.info(f"[DEBUG] LOOSE SUMMARY: ENABLED={loose_enabled}, PAUSED={loose_paused}, OTHER={loose_other}")
 
     stats = {
         "total": len(targets),
