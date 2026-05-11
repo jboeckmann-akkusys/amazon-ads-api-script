@@ -235,8 +235,9 @@ def categorize_targets(targets: list, active_campaign_ids: set = None, force_tes
         elif target_state == "PAUSED":
             paused_count += 1
 
+        campaign_id = str(target.get("campaignId", ""))
+
         if active_campaign_ids is not None:
-            campaign_id = target.get("campaignId")
             if campaign_id not in active_campaign_ids:
                 archived_campaign_count += 1
                 continue
@@ -257,60 +258,43 @@ def categorize_targets(targets: list, active_campaign_ids: set = None, force_tes
             continue
 
         current_bid = target.get("bid")
+        target_id = target.get("targetId", "N/A")
+        ad_group_default_bid = target.get("adGroupDefaultBid", 0)
 
+        # LAYER 1: BASELINE LOGIC (ALWAYS applied, regardless of performance)
         if target_type == "loose-match":
             loose_match_count += 1
             if target_state == "ENABLED":
                 target["_target_type"] = target_type
                 target["_current_bid"] = current_bid
                 pause_targets.append(target)
+                logger.info(f"[DEBUG] Target {target_id} | type={target_type} | campaign_id={campaign_id} | action=PAUSE | reason=baseline_loose_match_enabled")
 
         elif target_type == "complements":
             complements_count += 1
-            should_update = False
-
-            if target_state == "ENABLED":
-                if current_bid is None:
-                    should_update = True
-                elif current_bid > MIN_BID:
-                    should_update = True
-            elif target_state == "PAUSED":
-                should_update = True
-
-            if should_update or force_test_10:
-                target["_target_type"] = target_type
-                target["_current_bid"] = current_bid
-                target["_new_bid"] = MIN_BID
-                target["_new_state"] = "ENABLED" if target_state == "PAUSED" else None
-                low_bid_targets.append(target)
+            target["_target_type"] = target_type
+            target["_current_bid"] = current_bid
+            target["_new_bid"] = LOW_BID
+            target["_new_state"] = "ENABLED" if target_state == "PAUSED" else None
+            low_bid_targets.append(target)
+            logger.info(f"[DEBUG] Target {target_id} | type={target_type} | campaign_id={campaign_id} | action=LOW_BID | reason=baseline_complements")
 
         elif target_type == "substitutes":
             substitutes_count += 1
-            should_update = False
-            current_bid_val = current_bid if current_bid is not None else MIN_SUBSTITUTES_BID
-
-            if target_state == "ENABLED":
-                if current_bid is not None and current_bid > MIN_SUBSTITUTES_BID:
-                    new_bid = round(current_bid * 0.8, 2)
-                    new_bid = max(new_bid, MIN_SUBSTITUTES_BID)
-                    should_update = True
-                    target["_target_type"] = target_type
-                    target["_current_bid"] = current_bid
-                    target["_new_bid"] = new_bid
-                    reduce_bid_targets.append(target)
-            elif target_state == "PAUSED":
-                new_bid = round(current_bid_val * 0.8, 2)
-                new_bid = max(new_bid, MIN_SUBSTITUTES_BID)
-                should_update = True
-                target["_target_type"] = target_type
-                target["_current_bid"] = current_bid
-                target["_new_bid"] = new_bid
-                target["_new_state"] = "ENABLED"
-                reduce_bid_targets.append(target)
+            ad_group_bid = float(ad_group_default_bid) if ad_group_default_bid else 0.80
+            new_bid = round(ad_group_bid * 0.5, 2)
+            new_bid = max(new_bid, MIN_SUBSTITUTES_BID)
+            target["_target_type"] = target_type
+            target["_current_bid"] = current_bid
+            target["_new_bid"] = new_bid
+            target["_new_state"] = "ENABLED" if target_state == "PAUSED" else None
+            reduce_bid_targets.append(target)
+            logger.info(f"[DEBUG] Target {target_id} | type={target_type} | campaign_id={campaign_id} | action=REDUCE_BID | ad_group_bid={ad_group_bid} | new_bid={new_bid} | reason=baseline_substitutes_50pct")
 
         elif target_type == "close-match":
             close_match_count += 1
             skip_targets.append(target)
+            logger.info(f"[DEBUG] Target {target_id} | type={target_type} | campaign_id={campaign_id} | action=SKIP | reason=baseline_close_match")
 
     stats = {
         "total": len(targets),
