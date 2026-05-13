@@ -378,7 +378,7 @@ def filter_targets(targets: list, active_campaign_ids: set = None, low_bid: floa
 
         # Skip targets from archived campaigns
         if active_campaign_ids is not None:
-            campaign_id = target.get("campaignId")
+            campaign_id = str(target.get("campaignId"))
             if campaign_id not in active_campaign_ids:
                 archived_campaign_count += 1
                 continue
