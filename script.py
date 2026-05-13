@@ -161,7 +161,7 @@ def apply_campaign_bid_adjustments(active_campaign_ids: set, profile_id: str, re
     for campaign_id in active_campaign_ids:
         # Build bidding adjustments for each auto-target type
         bidding_config = {
-            "strategy": "legacyForSales",
+            "strategy": "LEGACY_FOR_SALES",
             "adjustments": [
                 {"predicate": pred, "percentage": -reduction_percent}
                 for pred in predicates
@@ -178,18 +178,20 @@ def apply_campaign_bid_adjustments(active_campaign_ids: set, profile_id: str, re
         try:
             result = sp.CampaignsV3(credentials=credentials).edit_campaigns(body=update_body)
             response = result.payload
-            
+
+            logger.info(f"  Campaign {campaign_id} API response: {response}")
+
             campaigns_result = response.get("campaigns", {})
             errors = campaigns_result.get("error", [])
             successes = campaigns_result.get("success", [])
-            
+
             if errors:
                 logger.warning(f"  Campaign {campaign_id} errors: {errors}")
                 failed_count += 1
             else:
                 logger.info(f"  Campaign {campaign_id}: bid adjustments applied (-{reduction_percent}%)")
                 success_count += 1
-                
+
         except Exception as e:
             logger.warning(f"  Campaign {campaign_id} failed: {e}")
             failed_count += 1
